@@ -474,6 +474,64 @@ class BedrockBase(BaseModel, ABC):
 
         return text
 
+    async def _aprepare_input_and_invoke(
+        self,
+        prompt: str,
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> str:
+        _model_kwargs = self.model_kwargs or {}
+
+        provider = self._get_provider()
+        params = {**_model_kwargs, **kwargs}
+        if self._guardrails_enabled:
+            params.update(self._get_guardrails_canonical())
+        input_body = LLMInputOutputAdapter.prepare_input(provider, prompt, params)
+        body = json.dumps(input_body)
+        accept = "application/json"
+        contentType = "application/json"
+
+        request_options = {
+            "body": body,
+            "modelId": self.model_id,
+            "accept": accept,
+            "contentType": contentType,
+        }
+
+        if self._guardrails_enabled:
+            request_options["guardrail"] = "ENABLED"
+            if self.guardrails.get("trace"):  # type: ignore[union-attr]
+                request_options["trace"] = "ENABLED"
+
+        try:
+            response = await self.client.invoke_model(**request_options)
+
+            text, body = LLMInputOutputAdapter.prepare_output(
+                provider, response
+            ).values()
+
+        except Exception as e:
+            raise ValueError(f"Error raised by bedrock service: {e}")
+
+        if stop is not None:
+            text = enforce_stop_tokens(text, stop)
+
+        # Verify and raise a callback error if any intervention occurs or a signal is
+        # sent from a Bedrock service,
+        # such as when guardrails are triggered.
+        services_trace = self._get_bedrock_services_signal(body)  # type: ignore[arg-type]
+
+        if services_trace.get("signal") and run_manager is not None:
+            await run_manager.on_llm_error(
+                Exception(
+                    f"Error raised by bedrock service: {services_trace.get('reason')}"
+                ),
+                **services_trace,
+            )
+
+        return text
+
     def _get_bedrock_services_signal(self, body: dict) -> dict:
         """
         This function checks the response body for an interrupt flag or message that indicates

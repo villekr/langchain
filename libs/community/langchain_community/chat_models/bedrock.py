@@ -1,6 +1,14 @@
-from typing import Any, Dict, Iterator, List, Optional
+from typing import (
+    Any,
+    AsyncIterator,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+)
 
 from langchain_core.callbacks import (
+    AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
 )
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -95,6 +103,24 @@ class BedrockChat(BaseChatModel, BedrockBase):
             delta = chunk.text
             yield ChatGenerationChunk(message=AIMessageChunk(content=delta))
 
+    async def _astream(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        provider = self._get_provider()
+        prompt = ChatPromptAdapter.convert_messages_to_prompt(
+            provider=provider, messages=messages
+        )
+
+        async for chunk in self._aprepare_input_and_invoke_stream(
+            prompt=prompt, stop=stop, run_manager=run_manager, **kwargs
+        ):
+            delta = chunk.text
+            yield ChatGenerationChunk(message=AIMessageChunk(content=delta))
+
     def _generate(
         self,
         messages: List[BaseMessage],
@@ -118,6 +144,35 @@ class BedrockChat(BaseChatModel, BedrockBase):
                 params["stop_sequences"] = stop
 
             completion = self._prepare_input_and_invoke(
+                prompt=prompt, stop=stop, run_manager=run_manager, **params
+            )
+
+        message = AIMessage(content=completion)
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+    async def _agenerate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        completion = ""
+
+        if self.streaming:
+            async for chunk in self._astream(messages, stop, run_manager, **kwargs):
+                completion += chunk.text
+        else:
+            provider = self._get_provider()
+            prompt = ChatPromptAdapter.convert_messages_to_prompt(
+                provider=provider, messages=messages
+            )
+
+            params: Dict[str, Any] = {**kwargs}
+            if stop:
+                params["stop_sequences"] = stop
+
+            completion = await self._aprepare_input_and_invoke(
                 prompt=prompt, stop=stop, run_manager=run_manager, **params
             )
 
