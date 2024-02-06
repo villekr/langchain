@@ -461,6 +461,65 @@ class BedrockBase(BaseModel, ABC):
             }
         }
 
+    def _prepare_request(
+        self,
+        prompt: Optional[str] = None,
+        system: Optional[str] = None,
+        messages: Optional[List[Dict]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        _model_kwargs = self.model_kwargs or {}
+        provider = self._get_provider()
+        params = {**_model_kwargs, **kwargs}
+        if self._guardrails_enabled:
+            params.update(self._get_guardrails_canonical())
+
+        input_body = LLMInputOutputAdapter.prepare_input(
+            provider=provider,
+            model_kwargs=params,
+            prompt=prompt,
+            system=system,
+            messages=messages,
+        )
+
+        body = json.dumps(input_body)
+        accept = "application/json"
+        content_type = "application/json"
+
+        request_options = {
+            "body": body,
+            "modelId": self.model_id,
+            "accept": accept,
+            "contentType": content_type
+        }
+
+        if self._guardrails_enabled:
+            request_options["guardrail"] = "ENABLED"
+            if self.guardrails.get("trace"):
+                request_options["trace"] = "ENABLED"
+
+        return request_options
+
+    def _process_response(
+        self,
+        response: Any,
+        stop: Optional[List[str]] = None,
+    ) -> str:
+        provider = self._get_provider()
+        text, body = LLMInputOutputAdapter.prepare_output(
+            provider, response
+        ).values()
+
+        if stop:
+            text = enforce_stop_tokens(text, stop)
+
+        # Verify and raise a callback error if any intervention occurs or a signal is
+        # sent from a Bedrock service,
+        # such as when guardrails are triggered.
+        services_trace = self._get_bedrock_services_signal(body)  # type: ignore[arg-type]
+
+        return text, services_trace
+
     def _prepare_input_and_invoke(
         self,
         prompt: Optional[str] = None,
@@ -470,55 +529,57 @@ class BedrockBase(BaseModel, ABC):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> str:
-        _model_kwargs = self.model_kwargs or {}
-
-        provider = self._get_provider()
-        params = {**_model_kwargs, **kwargs}
-        if self._guardrails_enabled:
-            params.update(self._get_guardrails_canonical())
-        input_body = LLMInputOutputAdapter.prepare_input(
-            provider=provider,
-            model_kwargs=params,
+        request_options = self._prepare_request(
             prompt=prompt,
             system=system,
             messages=messages,
+            **kwargs
         )
-        body = json.dumps(input_body)
-        accept = "application/json"
-        contentType = "application/json"
-
-        request_options = {
-            "body": body,
-            "modelId": self.model_id,
-            "accept": accept,
-            "contentType": contentType,
-        }
-
-        if self._guardrails_enabled:
-            request_options["guardrail"] = "ENABLED"
-            if self.guardrails.get("trace"):  # type: ignore[union-attr]
-                request_options["trace"] = "ENABLED"
 
         try:
             response = self.client.invoke_model(**request_options)
-
-            text, body = LLMInputOutputAdapter.prepare_output(
-                provider, response
-            ).values()
-
         except Exception as e:
             raise ValueError(f"Error raised by bedrock service: {e}")
 
-        if stop is not None:
-            text = enforce_stop_tokens(text, stop)
-
-        # Verify and raise a callback error if any intervention occurs or a signal is
-        # sent from a Bedrock service,
-        # such as when guardrails are triggered.
-        services_trace = self._get_bedrock_services_signal(body)  # type: ignore[arg-type]
+        text, services_trace = self._process_response(response, stop)
 
         if services_trace.get("signal") and run_manager is not None:
             run_manager.on_llm_error(
+                Exception(
+                    f"Error raised by bedrock service: {services_trace.get('reason')}"
+                ),
+                **services_trace,
+            )
+
+        return text
+
+    async def _aprepare_input_and_invoke(
+        self,
+        prompt: Optional[str] = None,
+        system: Optional[str] = None,
+        messages: Optional[List[Dict]] = None,
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> str:
+        request_options = self._prepare_request(
+            prompt=prompt,
+            system=system,
+            messages=messages,
+            **kwargs
+        )
+
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: self.client.invoke_model(**request_options)
+            )
+        except Exception as e:
+            raise ValueError(f"Error raised by bedrock service: {e}")
+
+        text, services_trace = self._process_response(response, stop)
+
+        if services_trace.get("signal") and run_manager is not None:
+            await run_manager.on_llm_error(
                 Exception(
                     f"Error raised by bedrock service: {services_trace.get('reason')}"
                 ),
@@ -555,15 +616,14 @@ class BedrockBase(BaseModel, ABC):
     def _is_guardrails_intervention(self, body: dict) -> bool:
         return body.get(GUARDRAILS_BODY_KEY) == "GUARDRAIL_INTERVENED"
 
-    def _prepare_input_and_invoke_stream(
+    def _prepare_input_for_streaming(
         self,
         prompt: Optional[str] = None,
         system: Optional[str] = None,
         messages: Optional[List[Dict]] = None,
         stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
-    ) -> Iterator[GenerationChunk]:
+    ) -> Dict[str, Any]:
         _model_kwargs = self.model_kwargs or {}
         provider = self._get_provider()
 
@@ -606,6 +666,25 @@ class BedrockBase(BaseModel, ABC):
             if self.guardrails.get("trace"):  # type: ignore[union-attr]
                 request_options["trace"] = "ENABLED"
 
+        return request_options
+
+    def _prepare_input_and_invoke_stream(
+        self,
+        prompt: Optional[str] = None,
+        system: Optional[str] = None,
+        messages: Optional[List[Dict]] = None,
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> Iterator[GenerationChunk]:
+        request_options = self._prepare_input_for_streaming(
+            prompt=prompt,
+            system=system,
+            messages=messages,
+            stop=stop,
+            **kwargs,
+        )
+
         try:
             response = self.client.invoke_model_with_response_stream(**request_options)
 
@@ -613,7 +692,7 @@ class BedrockBase(BaseModel, ABC):
             raise ValueError(f"Error raised by bedrock service: {e}")
 
         for chunk in LLMInputOutputAdapter.prepare_output_stream(
-            provider, response, stop, True if messages else False
+            self._get_provider(), response, stop, True if messages else False
         ):
             yield chunk
             # verify and raise callback error if any middleware intervened
@@ -629,39 +708,27 @@ class BedrockBase(BaseModel, ABC):
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> AsyncIterator[GenerationChunk]:
-        _model_kwargs = self.model_kwargs or {}
-        provider = self._get_provider()
-
-        if stop:
-            if provider not in self.provider_stop_sequence_key_name_map:
-                raise ValueError(
-                    f"Stop sequence key name for {provider} is not supported."
-                )
-            _model_kwargs[self.provider_stop_sequence_key_name_map.get(provider)] = stop
-
-        if provider == "cohere":
-            _model_kwargs["stream"] = True
-
-        params = {**_model_kwargs, **kwargs}
-        input_body = LLMInputOutputAdapter.prepare_input(
-            provider=provider, prompt=prompt, model_kwargs=params
+        request_options = self._prepare_input_for_streaming(
+            prompt=prompt,
+            stop=stop,
+            **kwargs,
         )
-        body = json.dumps(input_body)
 
-        response = await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: self.client.invoke_model_with_response_stream(
-                body=body,
-                modelId=self.model_id,
-                accept="application/json",
-                contentType="application/json",
-            ),
-        )
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: self.client.invoke_model_with_response_stream(**request_options),
+            )
+        except Exception as e:
+            raise ValueError(f"Error raised by bedrock service: {e}")
 
         async for chunk in LLMInputOutputAdapter.aprepare_output_stream(
-            provider, response, stop
+            self._get_provider(), response, stop
         ):
             yield chunk
+            # verify and raise callback error if any middleware intervened
+            self._get_bedrock_services_signal(chunk.generation_info)  # type: ignore[arg-type]
+
             if run_manager is not None and asyncio.iscoroutinefunction(
                 run_manager.on_llm_new_token
             ):
@@ -847,16 +914,18 @@ class Bedrock(LLM, BedrockBase):
                 response = await llm._acall("Tell me a joke.")
         """
 
-        if not self.streaming:
-            raise ValueError("Streaming must be set to True for async operations. ")
-
-        chunks = [
-            chunk.text
+        if self.streaming:
+            completion = ""
             async for chunk in self._astream(
                 prompt=prompt, stop=stop, run_manager=run_manager, **kwargs
-            )
-        ]
-        return "".join(chunks)
+            ):
+                completion += chunk.text
+            return completion
+
+        response = await self._aprepare_input_and_invoke(
+            prompt=prompt, stop=stop, run_manager=run_manager, **kwargs
+        )
+        return response
 
     def get_num_tokens(self, text: str) -> int:
         if self._model_is_anthropic:
