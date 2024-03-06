@@ -499,7 +499,9 @@ class BedrockBase(BaseModel, ABC):
                 request_options["trace"] = "ENABLED"
 
         try:
-            response = await self.client.invoke_model(**request_options)
+            response = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: self.client.invoke_model(**request_options)
+            )
 
             text, body = LLMInputOutputAdapter.prepare_output(
                 provider, response
@@ -825,16 +827,18 @@ class Bedrock(LLM, BedrockBase):
                 response = await llm._acall("Tell me a joke.")
         """
 
-        if not self.streaming:
-            raise ValueError("Streaming must be set to True for async operations. ")
-
-        chunks = [
-            chunk.text
+        if self.streaming:
+            completion = ""
             async for chunk in self._astream(
                 prompt=prompt, stop=stop, run_manager=run_manager, **kwargs
-            )
-        ]
-        return "".join(chunks)
+            ):
+                completion += chunk.text
+            return completion
+
+        response = await self._aprepare_input_and_invoke(
+            prompt=prompt, stop=stop, run_manager=run_manager, **kwargs
+        )
+        return response
 
     def get_num_tokens(self, text: str) -> int:
         if self._model_is_anthropic:
