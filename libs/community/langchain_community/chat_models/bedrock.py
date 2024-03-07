@@ -244,7 +244,12 @@ class BedrockChat(BaseChatModel, BedrockBase):
         system, formatted_messages, prompt = self._prepare_input_for_chat(messages)
 
         async for chunk in self._aprepare_input_and_invoke_stream(
-            prompt=prompt, stop=stop, run_manager=run_manager, **kwargs
+            prompt=prompt,
+            system=system,
+            messages=formatted_messages,
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs,
         ):
             delta = chunk.text
             yield ChatGenerationChunk(message=AIMessageChunk(content=delta))
@@ -300,7 +305,12 @@ class BedrockChat(BaseChatModel, BedrockBase):
                 params["stop_sequences"] = stop
 
             completion = await self._aprepare_input_and_invoke(
-                prompt=prompt, stop=stop, run_manager=run_manager, **params
+                prompt=prompt,
+                stop=stop,
+                run_manager=run_manager,
+                system=system,
+                messages=formatted_messages,
+                **params,
             )
 
         message = AIMessage(content=completion)
