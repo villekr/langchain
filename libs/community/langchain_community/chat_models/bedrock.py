@@ -197,13 +197,9 @@ class BedrockChat(BaseChatModel, BedrockBase):
 
         extra = Extra.forbid
 
-    def _stream(
-        self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
-        **kwargs: Any,
-    ) -> Iterator[ChatGenerationChunk]:
+    def _prepare_input_for_chat(
+            self, messages: List[BaseMessage]
+    ) -> Tuple[Optional[str], List[Dict], str]:
         provider = self._get_provider()
         system = None
         formatted_messages = None
@@ -216,6 +212,16 @@ class BedrockChat(BaseChatModel, BedrockBase):
             prompt = ChatPromptAdapter.convert_messages_to_prompt(
                 provider=provider, messages=messages
             )
+        return system, formatted_messages, prompt
+
+    def _stream(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        system, formatted_messages, prompt = self._prepare_input_for_chat(messages)
 
         for chunk in self._prepare_input_and_invoke_stream(
             prompt=prompt,
@@ -235,10 +241,7 @@ class BedrockChat(BaseChatModel, BedrockBase):
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
-        provider = self._get_provider()
-        prompt = ChatPromptAdapter.convert_messages_to_prompt(
-            provider=provider, messages=messages
-        )
+        system, formatted_messages, prompt = self._prepare_input_for_chat(messages)
 
         async for chunk in self._aprepare_input_and_invoke_stream(
             prompt=prompt, stop=stop, run_manager=run_manager, **kwargs
@@ -259,20 +262,9 @@ class BedrockChat(BaseChatModel, BedrockBase):
             for chunk in self._stream(messages, stop, run_manager, **kwargs):
                 completion += chunk.text
         else:
-            provider = self._get_provider()
-            system = None
-            formatted_messages = None
-            params: Dict[str, Any] = {**kwargs}
-            if provider == "anthropic":
-                prompt = None
-                system, formatted_messages = ChatPromptAdapter.format_messages(
-                    provider, messages
-                )
-            else:
-                prompt = ChatPromptAdapter.convert_messages_to_prompt(
-                    provider=provider, messages=messages
-                )
+            system, formatted_messages, prompt = self._prepare_input_for_chat(messages)
 
+            params: Dict[str, Any] = {**kwargs}
             if stop:
                 params["stop_sequences"] = stop
 
@@ -301,10 +293,7 @@ class BedrockChat(BaseChatModel, BedrockBase):
             async for chunk in self._astream(messages, stop, run_manager, **kwargs):
                 completion += chunk.text
         else:
-            provider = self._get_provider()
-            prompt = ChatPromptAdapter.convert_messages_to_prompt(
-                provider=provider, messages=messages
-            )
+            system, formatted_messages, prompt = self._prepare_input_for_chat(messages)
 
             params: Dict[str, Any] = {**kwargs}
             if stop:
@@ -314,9 +303,8 @@ class BedrockChat(BaseChatModel, BedrockBase):
                 prompt=prompt, stop=stop, run_manager=run_manager, **params
             )
 
-        return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content=completion))]
-        )
+        message = AIMessage(content=completion)
+        return ChatResult(generations=[ChatGeneration(message=message)])
 
     def get_num_tokens(self, text: str) -> int:
         if self._model_is_anthropic:

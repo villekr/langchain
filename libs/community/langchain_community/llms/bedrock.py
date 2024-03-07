@@ -461,7 +461,7 @@ class BedrockBase(BaseModel, ABC):
             }
         }
 
-    def _prepare_request(
+    def _prepare_input(
         self,
         prompt: Optional[str] = None,
         system: Optional[str] = None,
@@ -469,11 +469,11 @@ class BedrockBase(BaseModel, ABC):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         _model_kwargs = self.model_kwargs or {}
+
         provider = self._get_provider()
         params = {**_model_kwargs, **kwargs}
         if self._guardrails_enabled:
             params.update(self._get_guardrails_canonical())
-
         input_body = LLMInputOutputAdapter.prepare_input(
             provider=provider,
             model_kwargs=params,
@@ -481,7 +481,6 @@ class BedrockBase(BaseModel, ABC):
             system=system,
             messages=messages,
         )
-
         body = json.dumps(input_body)
         accept = "application/json"
         content_type = "application/json"
@@ -495,7 +494,7 @@ class BedrockBase(BaseModel, ABC):
 
         if self._guardrails_enabled:
             request_options["guardrail"] = "ENABLED"
-            if self.guardrails.get("trace"):
+            if self.guardrails.get("trace"):  # type: ignore[union-attr]
                 request_options["trace"] = "ENABLED"
 
         return request_options
@@ -510,7 +509,7 @@ class BedrockBase(BaseModel, ABC):
             provider, response
         ).values()
 
-        if stop:
+        if stop is not None:
             text = enforce_stop_tokens(text, stop)
 
         # Verify and raise a callback error if any intervention occurs or a signal is
@@ -529,7 +528,7 @@ class BedrockBase(BaseModel, ABC):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> str:
-        request_options = self._prepare_request(
+        request_options = self._prepare_input(
             prompt=prompt,
             system=system,
             messages=messages,
@@ -562,7 +561,7 @@ class BedrockBase(BaseModel, ABC):
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> str:
-        request_options = self._prepare_request(
+        request_options = self._prepare_input(
             prompt=prompt,
             system=system,
             messages=messages,
