@@ -224,33 +224,15 @@ class LLMInputOutputAdapter:
 
     @classmethod
     async def aprepare_output_stream(
-        cls, provider: str, response: Any, stop: Optional[List[str]] = None
+        cls,
+        provider: str,
+        response: Any,
+        stop: Optional[List[str]] = None,
+        messages_api: bool = False,
     ) -> AsyncIterator[GenerationChunk]:
-        stream = response.get("body")
-
-        if not stream:
-            return
-
-        output_key = cls.provider_to_output_key_map.get(provider, None)
-
-        if not output_key:
-            raise ValueError(
-                f"Unknown streaming response output key for provider: {provider}"
-            )
-
-        for event in stream:
-            chunk = event.get("chunk")
-            if not chunk:
-                continue
-
-            chunk_obj = json.loads(chunk.get("bytes").decode())
-
-            if provider == "cohere" and (
-                chunk_obj["is_finished"] or chunk_obj[output_key] == "<EOS_TOKEN>"
-            ):
-                return
-
-            yield GenerationChunk(text=chunk_obj[output_key])
+        iters = cls.prepare_output_stream(provider, response, stop, messages_api)
+        for item in iters:
+            yield item
 
 
 class BedrockBase(BaseModel, ABC):
@@ -461,7 +443,7 @@ class BedrockBase(BaseModel, ABC):
             }
         }
 
-    def _prepare_request(
+    def _prepare_input(
         self,
         prompt: Optional[str] = None,
         system: Optional[str] = None,
@@ -469,11 +451,11 @@ class BedrockBase(BaseModel, ABC):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         _model_kwargs = self.model_kwargs or {}
+
         provider = self._get_provider()
         params = {**_model_kwargs, **kwargs}
         if self._guardrails_enabled:
             params.update(self._get_guardrails_canonical())
-
         input_body = LLMInputOutputAdapter.prepare_input(
             provider=provider,
             model_kwargs=params,
@@ -481,7 +463,6 @@ class BedrockBase(BaseModel, ABC):
             system=system,
             messages=messages,
         )
-
         body = json.dumps(input_body)
         accept = "application/json"
         content_type = "application/json"
@@ -495,7 +476,7 @@ class BedrockBase(BaseModel, ABC):
 
         if self._guardrails_enabled:
             request_options["guardrail"] = "ENABLED"
-            if self.guardrails.get("trace"):
+            if self.guardrails.get("trace"):  # type: ignore[union-attr]
                 request_options["trace"] = "ENABLED"
 
         return request_options
@@ -510,7 +491,7 @@ class BedrockBase(BaseModel, ABC):
             provider, response
         ).values()
 
-        if stop:
+        if stop is not None:
             text = enforce_stop_tokens(text, stop)
 
         # Verify and raise a callback error if any intervention occurs or a signal is
@@ -529,7 +510,7 @@ class BedrockBase(BaseModel, ABC):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> str:
-        request_options = self._prepare_request(
+        request_options = self._prepare_input(
             prompt=prompt,
             system=system,
             messages=messages,
@@ -562,7 +543,7 @@ class BedrockBase(BaseModel, ABC):
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> str:
-        request_options = self._prepare_request(
+        request_options = self._prepare_input(
             prompt=prompt,
             system=system,
             messages=messages,
@@ -703,13 +684,17 @@ class BedrockBase(BaseModel, ABC):
 
     async def _aprepare_input_and_invoke_stream(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
+        system: Optional[str] = None,
+        messages: Optional[List[Dict]] = None,
         stop: Optional[List[str]] = None,
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> AsyncIterator[GenerationChunk]:
         request_options = self._prepare_input_for_streaming(
             prompt=prompt,
+            system=system,
+            messages=messages,
             stop=stop,
             **kwargs,
         )
@@ -723,7 +708,7 @@ class BedrockBase(BaseModel, ABC):
             raise ValueError(f"Error raised by bedrock service: {e}")
 
         async for chunk in LLMInputOutputAdapter.aprepare_output_stream(
-            self._get_provider(), response, stop
+            self._get_provider(), response, stop, True if messages else False
         ):
             yield chunk
             # verify and raise callback error if any middleware intervened
