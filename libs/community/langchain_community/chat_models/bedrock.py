@@ -1,5 +1,5 @@
 import re
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple, Union
 
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
