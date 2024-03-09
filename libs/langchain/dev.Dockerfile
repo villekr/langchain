@@ -1,15 +1,22 @@
 # This is a Dockerfile for the Development Container
 
 # Use the Python base image
-ARG VARIANT="3.11-bullseye"
-FROM mcr.microsoft.com/devcontainers/python:0-${VARIANT} AS langchain-dev-base
+#ARG VARIANT="3.11-bullseye"
+#FROM mcr.microsoft.com/devcontainers/python:0-${VARIANT} AS langchain-dev-base
+ARG VARIANT="3.12-bullseye"
+FROM mcr.microsoft.com/devcontainers/python:${VARIANT} AS langchain-dev-base
 
 USER vscode
 
 # Define the version of Poetry to install (default is 1.4.2)
 # Define the directory of python virtual environment
+#ARG PYTHON_VIRTUALENV_HOME=/home/vscode/langchain-py-env \
+#    POETRY_VERSION=1.4.2
+
 ARG PYTHON_VIRTUALENV_HOME=/home/vscode/langchain-py-env \
-    POETRY_VERSION=1.3.2
+    POETRY_VERSION=1.7.1
+
+# RUN curl -sSL https://install.python-poetry.org | POETRY_VERSION=1.5.1 python3 -
 
 ENV POETRY_VIRTUALENVS_IN_PROJECT=false \
     POETRY_NO_INTERACTION=true 
@@ -47,4 +54,5 @@ COPY libs/core ../core
 COPY libs/community/ ../community/
 COPY libs/text-splitters/ ../text-splitters/
 # Install the Poetry dependencies (this layer will be cached as long as the dependencies don't change)
-RUN poetry install --no-interaction --no-ansi --with dev,test,docs
+#RUN poetry install --no-interaction --no-ansi --with dev,test,docs
+RUN poetry install --no-interaction --no-ansi --with dev
